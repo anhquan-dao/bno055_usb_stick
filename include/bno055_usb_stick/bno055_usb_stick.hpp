@@ -5,16 +5,19 @@
 #include <deque>
 #include <sstream>
 #include <string>
+#include <iomanip>
 
-#include <ros/console.h>
-#include <ros/duration.h>
-#include <ros/names.h>
-#include <ros/param.h>
+// #include <ros/console.h>
+// #include <ros/duration.h>
+// #include <ros/names.h>
+// #include <ros/param.h>
+
+#include <rclcpp/rclcpp.hpp>
 
 #include <bno055_usb_stick/constants.hpp>
 #include <bno055_usb_stick/decoder.hpp>
 #include <bno055_usb_stick/match_conditions.hpp>
-#include <bno055_usb_stick_msgs/Output.h>
+#include <bno055_usb_stick/msg/output.hpp>
 
 #include <boost/asio/deadline_timer.hpp>
 #include <boost/asio/io_service.hpp>
@@ -28,19 +31,29 @@
 #include <boost/system/error_code.hpp>
 #include <boost/system/system_error.hpp>
 
+
 namespace bno055_usb_stick {
 
 class BNO055USBStick {
 public:
-  typedef boost::function< void(const bno055_usb_stick_msgs::Output &) > Callback;
+  typedef boost::function< void(const bno055_usb_stick::msg::Output &) > Callback;
 
 public:
   BNO055USBStick(boost::asio::io_service &asio_service, const Callback &callback,
-                 const std::string &ns = "~")
-      : port_(ros::param::param< std::string >(ros::names::append(ns, "port"), "/dev/ttyACM0")),
-        timeout_(ros::param::param(ros::names::append(ns, "timeout"), 1.)),
-        mode_(ros::param::param< std::string >(ros::names::append(ns, "mode"), "ndof")),
-        serial_(asio_service), timer_(asio_service), callback_(callback), decoder_(ns) {
+                 const std::shared_ptr<rclcpp::Node> node)
+      : callback_(callback) {
+
+    node_ = node;
+    port_ = node_->get_parameter("port").as_string();
+    mode_ = node_->get_parameter("mode").as_string();
+
+    double timeout = node_->get_parameter("timeout").as_double();
+    timeout_ = std::make_shared<rclcpp::Duration>(timeout*1.0e+09);
+
+    decoder_ = std::make_shared<Decoder>(node_);
+    serial_ = std::make_shared<boost::asio::serial_port>(asio_service);
+    timer_ = std::make_shared<boost::asio::deadline_timer>(asio_service);
+    
     start();
   }
 
@@ -53,17 +66,17 @@ private:
 
     // setup the serial port
     try {
-      serial_.open(port_);
+      serial_->open(port_);
 
       typedef boost::asio::serial_port Serial;
-      serial_.set_option(Serial::baud_rate(115200));
-      serial_.set_option(Serial::flow_control(Serial::flow_control::none));
-      serial_.set_option(Serial::parity(Serial::parity::none));
-      serial_.set_option(Serial::stop_bits(Serial::stop_bits::one));
-      serial_.set_option(Serial::character_size(8));
+      serial_->set_option(Serial::baud_rate(115200));
+      serial_->set_option(Serial::flow_control(Serial::flow_control::none));
+      serial_->set_option(Serial::parity(Serial::parity::none));
+      serial_->set_option(Serial::stop_bits(Serial::stop_bits::one));
+      serial_->set_option(Serial::character_size(8));
     } catch (const boost::system::system_error &error) {
       // retry if something is wrong
-      ROS_ERROR_STREAM("start: " << error.what());
+      RCLCPP_ERROR(node_->get_logger(), "start: %s", error.what());
       restart();
       return;
     }
@@ -79,8 +92,7 @@ private:
         commands_.push_back(*command);
       }
     } else {
-      ROS_WARN_STREAM("Unknown mode \""
-                      << mode_ << "\" was given. Will use the default mode \"ndof\" instead.");
+      RCLCPP_WARN(node_->get_logger(),"Unknown mode \" %s \" was given. Will use the default mode \"ndof\" instead.", mode_ );
       for (const boost::uint8_t **command = Constants::toNDOFCommands(); *command; ++command) {
         commands_.push_back(*command);
       }
@@ -95,14 +107,14 @@ private:
 
   void startSendCommand() {
     if (commands_.empty()) {
-      ROS_ERROR("startSendCommand: No command in the queue");
+      RCLCPP_ERROR(node_->get_logger(),"startSendCommand: No command in the queue");
       restart();
       return;
     }
 
     // trigger send the top command in the queue
     const boost::uint8_t *command(commands_.front());
-    boost::asio::async_write(serial_,
+    boost::asio::async_write(*serial_,
                              boost::asio::buffer(command, Constants::getCommandLength(command)),
                              boost::bind(&BNO055USBStick::handleSendCommand, this, _1, _2));
 
@@ -115,7 +127,7 @@ private:
     cancelWaitDeadline();
 
     if (error) {
-      ROS_ERROR_STREAM("handleSendCommand: " << error.message());
+      RCLCPP_ERROR(node_->get_logger(),"handleSendCommand: %s", error.message());
       restart();
       return;
     }
@@ -130,7 +142,7 @@ private:
 
   void startWaitResponse() {
     // trigger read a responce
-    boost::asio::async_read_until(serial_, buffer_, ResponseCondition(),
+    boost::asio::async_read_until(*serial_, buffer_, ResponseCondition(),
                                   boost::bind(&BNO055USBStick::handleWaitResponse, this, _1, _2));
 
     // schedule restarting in case of timeout
@@ -142,7 +154,7 @@ private:
     cancelWaitDeadline();
 
     if (error) {
-      ROS_ERROR_STREAM("handleWaitResponse: " << error.message());
+      RCLCPP_ERROR(node_->get_logger(),"handleWaitResponse: %s ", error.message());
       restart();
       return;
     }
@@ -161,7 +173,7 @@ private:
 
   void startWaitData() {
     // trigger read a data
-    boost::asio::async_read_until(serial_, buffer_, DataCondition(),
+    boost::asio::async_read_until(*serial_, buffer_, DataCondition(),
                                   boost::bind(&BNO055USBStick::handleWaitData, this, _1, _2));
 
     // schedule restarting in case of timeout
@@ -173,7 +185,7 @@ private:
     cancelWaitDeadline();
 
     if (error) {
-      ROS_ERROR_STREAM("handleWaitData: " << error.message());
+      RCLCPP_ERROR(node_->get_logger(),"handleWaitData: %s", error.message());
       restart();
       return;
     }
@@ -184,7 +196,7 @@ private:
       const boost::uint8_t *data_end(
           boost::asio::buffer_cast< const boost::uint8_t * >(buffer_.data()) + bytes);
       const boost::uint8_t *data_begin(data_end - Constants::DAT_LEN);
-      const bno055_usb_stick_msgs::Output output(decoder_.decode(data_begin));
+      const bno055_usb_stick::msg::Output output(decoder_->decode(data_begin));
       callback_(output);
     }
 
@@ -198,12 +210,12 @@ private:
   void stop() {
     // finalize the serial port
     try {
-      if (serial_.is_open()) {
-        serial_.close();
+      if (serial_->is_open()) {
+        serial_->close();
       }
     } catch (const boost::system::system_error &error) {
       // just print the error because can do nothing further
-      ROS_ERROR_STREAM("stop: " << error.what());
+      RCLCPP_ERROR(node_->get_logger(),"stop: %s", error.what());
     }
   }
 
@@ -213,30 +225,37 @@ private:
   }
 
   void startWaitDeadline(void (BNO055USBStick::*handler)()) {
-    timer_.expires_from_now(timeout_.toBoost());
-    timer_.async_wait(boost::bind(&BNO055USBStick::handleWaitDeadline, this, _1, handler));
+    boost::posix_time::time_duration boost_timeout;
+    #if defined(BOOST_DATE_TIME_HAS_NANOSECONDS)
+      boost_timeout = boost::posix_time::nanoseconds(timeout_->nanoseconds());
+    #else
+      boost_timeout = boost::posix_time::microseconds(timeout_->nanoseconds()/1000);
+    #endif
+    
+    timer_->expires_from_now(boost_timeout);
+    timer_->async_wait(boost::bind(&BNO055USBStick::handleWaitDeadline, this, _1, handler));
   }
 
-  void cancelWaitDeadline() { timer_.cancel(); }
+  void cancelWaitDeadline() { timer_->cancel(); }
 
   void handleWaitDeadline(const boost::system::error_code &error,
                           void (BNO055USBStick::*handler)()) {
     // make sure this callback is called by a deadline expiration
     if (error == boost::asio::error::operation_aborted) {
-      // ROS_INFO("handleWaitDeadline: the deadline disabled");
+      // RCLCPP_INFO(node_->get_logger(),"handleWaitDeadline: the deadline disabled");
       return;
     } else if (error) {
-      ROS_ERROR_STREAM("handleWaitDeadline: " << error.message());
+      RCLCPP_ERROR(node_->get_logger(),"handleWaitDeadline: %s", error.message());
       return;
     }
 
     // try to cancel all operations on the serial port
     try {
-      if (serial_.is_open()) {
-        serial_.cancel();
+      if (serial_->is_open()) {
+        serial_->cancel();
       }
     } catch (const boost::system::system_error &error_on_cancel) {
-      ROS_ERROR_STREAM("handleWaitDeadline: " << error_on_cancel.what());
+      RCLCPP_ERROR(node_->get_logger(),"handleWaitDeadline: %s", error_on_cancel.what());
     }
 
     // execute the given handler
@@ -252,7 +271,7 @@ private:
     for (const boost::uint8_t *c = begin; c != end; ++c) {
       oss << "0x" << std::setw(2) << std::setfill('0') << std::hex << int(*c) << " ";
     }
-    ROS_INFO_STREAM(prefix << oss.str());
+    RCLCPP_INFO(node_->get_logger(),"%s%s", prefix, oss.str());
   }
 
   void dumpRead(const std::string &prefix, const std::size_t bytes) {
@@ -262,28 +281,30 @@ private:
     for (const boost::uint8_t *c = begin; c != end; ++c) {
       oss << "0x" << std::setw(2) << std::setfill('0') << std::hex << int(*c) << " ";
     }
-    ROS_INFO_STREAM(prefix << oss.str());
+    RCLCPP_INFO(node_->get_logger(),"%s%s", prefix, oss.str());
   }
 
 private:
   // parameters
-  const std::string port_;
-  const ros::Duration timeout_;
-  const std::string mode_;
+  std::string port_;
+  std::shared_ptr<rclcpp::Duration> timeout_;
+  std::string mode_;
 
   // buffers
   std::deque< const boost::uint8_t * > commands_;
   boost::asio::streambuf buffer_;
 
   // async objects
-  boost::asio::serial_port serial_;
-  boost::asio::deadline_timer timer_;
+  std::shared_ptr<boost::asio::serial_port> serial_;
+  std::shared_ptr<boost::asio::deadline_timer> timer_;
 
   // callback given by the user
   const Callback callback_;
 
   // orientation and sensor decoder
-  Decoder decoder_;
+  std::shared_ptr<Decoder> decoder_;
+
+  std::shared_ptr<rclcpp::Node> node_;
 };
 }
 

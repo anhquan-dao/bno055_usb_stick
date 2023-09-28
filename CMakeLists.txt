@@ -1,23 +1,43 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.3)
 project(bno055_usb_stick)
 
+if(NOT CMAKE_CXX_STANDARD)
+  set(CMAKE_CXX_STANDARD 14)
+endif()
+
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+  add_compile_options(-Wall -Wextra -Wpedantic -ggdb3)
+endif()
+
+set(CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
+ 
 ## Find catkin macros and libraries
 ## if COMPONENTS list like find_package(catkin REQUIRED COMPONENTS xyz)
 ## is used, also find other catkin packages
-find_package(
-  catkin REQUIRED COMPONENTS
-  bno055_usb_stick_msgs
-  geometry_msgs
-  roscpp
-  sensor_msgs
-  tf
-  )
+# find_package(
+#   catkin REQUIRED COMPONENTS
+#   bno055_usb_stick_msgs
+#   geometry_msgs
+#   roscpp
+#   sensor_msgs
+#   tf
+#   )
+
+find_package(ament_cmake REQUIRED)
+
+find_package(rcl_interfaces REQUIRED)
+find_package(rclcpp REQUIRED)
+find_package(rclcpp_components REQUIRED)
+
+find_package(geometry_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(tf2_ros REQUIRED)
+find_package(tf2_geometry_msgs REQUIRED)
+
+find_package(rosidl_default_generators REQUIRED)
 
 ## System dependencies are found with CMake's conventions
-find_package(
-  Boost REQUIRED COMPONENTS 
-  system
-  )
+find_package(Boost REQUIRED COMPONENTS system)
 
 
 ## Uncomment this if the package has a setup.py. This macro ensures
@@ -50,11 +70,17 @@ find_package(
 ##   * add every package in MSG_DEP_SET to generate_messages(DEPENDENCIES ...)
 
 ## Generate messages in the 'msg' folder
-# add_message_files(
-#   FILES
-#   Message1.msg
-#   Message2.msg
-# )
+
+set(msg_files
+  "msg/CalibrationStatus.msg"
+  "msg/EulerAngles.msg"
+  "msg/Output.msg"
+)
+rosidl_generate_interfaces(
+  ${PROJECT_NAME}
+  ${msg_files} 
+  DEPENDENCIES geometry_msgs std_msgs
+)
 
 ## Generate services in the 'srv' folder
 # add_service_files(
@@ -105,12 +131,12 @@ find_package(
 ## LIBRARIES: libraries you create in this project that dependent projects also need
 ## CATKIN_DEPENDS: catkin_packages dependent projects also need
 ## DEPENDS: system dependencies of this project that dependent projects also need
-catkin_package(
-  INCLUDE_DIRS include
-  LIBRARIES ${Boost_LIBRARIES} #bno055_usb_stick
-  CATKIN_DEPENDS bno055_usb_stick_msgs geometry_msgs roscpp sensor_msgs tf
-#  DEPENDS system_lib
-)
+# catkin_package(
+#   INCLUDE_DIRS include
+#   LIBRARIES ${Boost_LIBRARIES} #bno055_usb_stick
+#   CATKIN_DEPENDS bno055_usb_stick_msgs geometry_msgs roscpp sensor_msgs tf
+# #  DEPENDS system_lib
+# )
 
 ###########
 ## Build ##
@@ -118,11 +144,7 @@ catkin_package(
 
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
-# include_directories(include)
-include_directories(
-  include
-  ${catkin_INCLUDE_DIRS}
-)
+include_directories(include  ${Boost_INCLUDE_DIRS})
 
 ## Declare a C++ library
 # add_library(bno055_usb_stick
@@ -138,21 +160,22 @@ include_directories(
 add_executable(
   bno055_usb_stick_node 
   src/bno055_usb_stick_node.cpp
-  )
+)
 
-## Add cmake target dependencies of the executable
-## same as for the library above
-add_dependencies(
-  bno055_usb_stick_node
-  bno055_usb_stick_msgs_generate_messages_cpp
-  )
+ament_target_dependencies(bno055_usb_stick_node
+  rclcpp
+  rclcpp_components
+  rcl_interfaces
+  geometry_msgs
+  sensor_msgs
+  tf2_ros
+)
 
-## Specify libraries to link a library or executable target against
-target_link_libraries(
-  bno055_usb_stick_node
-  ${catkin_LIBRARIES}
-  ${Boost_LIBRARIES}
-  )
+target_link_libraries(bno055_usb_stick_node ${Boost_LIBRARIES})
+
+rosidl_target_interfaces(bno055_usb_stick_node
+  ${PROJECT_NAME} "rosidl_typesupport_cpp")
+
 
 #############
 ## Install ##
@@ -175,6 +198,11 @@ target_link_libraries(
 #   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 # )
 
+install(TARGETS
+  bno055_usb_stick_node 
+  DESTINATION lib/${PROJECT_NAME}
+)
+
 ## Mark cpp header files for installation
 # install(DIRECTORY include/${PROJECT_NAME}/
 #   DESTINATION ${CATKIN_PACKAGE_INCLUDE_DESTINATION}
@@ -182,12 +210,45 @@ target_link_libraries(
 #   PATTERN ".svn" EXCLUDE
 # )
 
+install(DIRECTORY include/
+  DESTINATION include)
+
 ## Mark other files for installation (e.g. launch and bag files, etc.)
 # install(FILES
 #   # myfile1
 #   # myfile2
 #   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
 # )
+
+ament_export_include_directories(include)
+ament_export_dependencies(
+  rclcpp
+  rclcpp_components
+  rcl_interfaces
+  geometry_msgs
+  sensor_msgs
+  tf2_ros
+  tf2_geometry_msgs
+  rosidl_default_runtime
+)
+
+# if(rcl_interfaces_VERSION VERSION_LESS "1.2.0")
+#   install(
+#     DIRECTORY include/
+#     DESTINATION include
+#     FILES_MATCHING PATTERN "*.hpp"
+#   )
+# else()
+#   # NOTE(vooon): Humble
+#   install(
+#     DIRECTORY include/
+#     DESTINATION include/mavros_msgs
+#     FILES_MATCHING PATTERN "*.hpp"
+#   )
+# endif()
+
+
+ament_package()
 
 #############
 ## Testing ##
